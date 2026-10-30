@@ -87,17 +87,30 @@ excluded from regenerated comparisons.
 
 The audited RTX 5050 Laptop (8GB) runs Dinomaly at 448px/batch 16 with BF16 and gradient
 checkpointing; the same batch without checkpointing runs out of memory. Full experiments
-will use the **user-selected 24GB+ GPU**. Its model config preserves the architecture and
-optimization budget:
+will use the **user-selected 24GB+ GPU** (see [`REMOTE_TRAINING.md`](REMOTE_TRAINING.md)
+for full transfer, `tmux` session setup and result retrieval). Its model config preserves
+the architecture and optimization budget:
 
 ```bash
-# On the target GPU: first check memory using a disposable, short training run.
-python scripts/train.py --data configs/mvtec_unified.yaml --model configs/models/dinomaly_24gb.yaml \
-    --run-dir runs/hardware_probe/dinomaly --set model.train.iters=20
+# On the target 24GB+ GPU: first verify memory in a disposable directory, then clean it up.
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python scripts/train.py \
+    --data configs/mvtec_unified.yaml --model configs/models/dinomaly_24gb.yaml \
+    --run-dir runs/hardware_probe/dinomaly --num-workers 6 --set model.train.iters=20
+cat runs/hardware_probe/dinomaly/train_summary.json
+rm -rf runs/hardware_probe
 
-# Full unified A0; the target machine and dataset paths must be provisioned first.
-python scripts/train.py --data configs/mvtec_unified.yaml --model configs/models/dinomaly_24gb.yaml
+# Full unified Dinomaly (A0) alone on the 24GB+ GPU:
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python scripts/train.py \
+    --data configs/mvtec_unified.yaml --model configs/models/dinomaly_24gb.yaml --num-workers 6
 python scripts/evaluate.py --run runs/mvtec_ad/dinomaly --optshift
+
+# Or run all three baselines + OptShift sequentially without gradient checkpointing:
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python scripts/run_baselines.py \
+    --data configs/mvtec_unified.yaml --runs-root runs/mvtec_ad --optshift \
+    --num-workers 6 --set model.grad_checkpoint=false
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python scripts/run_baselines.py \
+    --data configs/visa_pcb.yaml --runs-root runs/visa_pcb --optshift \
+    --num-workers 6 --set model.grad_checkpoint=false
 ```
 
 Training summaries record actual categories, iteration counts, GPU, peak training VRAM

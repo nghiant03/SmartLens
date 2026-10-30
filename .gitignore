@@ -3,11 +3,10 @@ __pycache__/
 *.egg-info/
 .venv/
 .pytest_cache/
-runs/
-datasets/
-weights/
-data/
-downloads/
+/runs/
+/datasets/
+/weights/
+/downloads/
 
 *.pt
 *.pth

@@ -1,7 +1,7 @@
 # Set up training and evaluation on another machine
 
 These steps cover the implemented baselines. HiRes-ProtoAD and A1–A4 are not yet
-implemented. Commands assume Ubuntu 24.04, SSH access and one NVIDIA GPU.
+implemented. Commands assume Ubuntu 22.04/24.04, SSH access and one NVIDIA GPU.
 
 ## 1. Select the machine
 
@@ -14,62 +14,72 @@ implemented. Commands assume Ubuntu 24.04, SSH access and one NVIDIA GPU.
 - Use a GPU image with a working, sufficiently recent NVIDIA driver for CUDA 12.8
   PyTorch wheels. `nvidia-smi` must work before creating the Python environment.
 
-Current local footprint: datasets ~6.8GB, weights ~626MB, Python environment ~7.1GB;
-full experiment outputs will exceed the existing smoke-run footprint.
+Current local footprint: datasets ~6.8GB, active weights ~547MB (excluding retired
+EfficientAD weights), Python environment ~7.1GB; full experiment outputs will exceed the
+existing smoke-run footprint.
 
-## 2. Copy the current project from the laptop
+## 2. Copy the project and data from the local checkout
 
-The working source files are currently untracked in Git. A clone alone will not transfer
-this implementation. Copy the working tree, datasets, weights and existing split manifests.
+Source code, configs and locked split manifests (`configs/splits/*.json`) are tracked in
+Git, while `datasets/` and `weights/` are git-ignored. Syncing from the local repository
+root transfers the working tree, split manifests, datasets and active cached weights in
+one step without requiring GitHub credentials on the remote host.
 
-On the **laptop**, replace the SSH destination and target path:
+From the **local repository root**, replace the SSH destination and target path:
 
 ```bash
 export REMOTE=user@GPU_HOST
 export REMOTE_DIR=/home/user/SmartLens
 ssh "$REMOTE" "mkdir -p '$REMOTE_DIR'"
 rsync -avh --progress \
-    --exclude='.git/' --exclude='.venv/' --exclude='__pycache__/' \
-    --exclude='.pytest_cache/' --exclude='*.egg-info/' --exclude='runs/' \
-    /home/nghiant/Git/Project/SmartLens/ "$REMOTE:$REMOTE_DIR/"
+    --exclude='.git/' --exclude='.jj/' --exclude='.crush/' \
+    --exclude='.venv/' --exclude='__pycache__/' --exclude='.pytest_cache/' \
+    --exclude='*.egg-info/' --exclude='runs/' --exclude='weights/efficientad/' \
+    ./ "$REMOTE:$REMOTE_DIR/"
 ```
 
-The final slash on the source directory is intentional. This transfers `datasets/` and
-`weights/`, but not the laptop environment or smoke-run checkpoints. Do not regenerate
+The trailing slash on `./` is intentional. This transfers `datasets/` and active
+`weights/` (`torch/` and `huggingface/`), while omitting VCS/editor metadata, the local
+virtual environment, retired EfficientAD weights and smoke-run outputs. Do not regenerate
 the split manifests on the new machine: every model must use the same held-out images.
 
 ## 3. Create the Python environment on the GPU machine
 
-On the **GPU machine**:
+On the **GPU machine** (set `REMOTE_DIR` to match step 2):
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3.12 python3.12-venv git rsync tmux
-cd /home/user/SmartLens
+sudo apt-get install -y curl rsync tmux
+command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | sh)
+export PATH="$HOME/.local/bin:$PATH"
+
+export REMOTE_DIR=/home/user/SmartLens
+cd "$REMOTE_DIR"
 nvidia-smi
 
-python3.12 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install torch==2.11.0 torchvision==0.26.0 \
+uv pip install --python .venv/bin/python torch torchvision \
     --index-url https://download.pytorch.org/whl/cu128
-python -m pip install 'timm==1.0.30' -e '.[dev]'
-python -m pip check
+uv pip install --python .venv/bin/python -e ".[dev]"
+uv pip check --python .venv/bin/python
 ```
 
-These PyTorch/torchvision/timm versions match the audited environment. Other dependencies
-are resolved from `pyproject.toml`; save the resulting environment below. The PyTorch
-wheels supply their CUDA user-space dependencies; no separate CUDA toolkit installation
-is needed for this project's Python code. The NVIDIA driver is still required.
+`uv venv --python 3.12` provisions Python 3.12 automatically if it is not installed
+system-wide. Project and test dependencies are resolved from `pyproject.toml` (the
+audited environment used `torch==2.11.0+cu128`, `torchvision==0.26.0+cu128` and
+`timm==1.0.30`); save the exact resolved environment in step 4. The PyTorch wheels supply
+their CUDA user-space dependencies, so no separate CUDA toolkit installation is needed
+for this project's Python code. The NVIDIA host driver is still required.
 
 ## 4. Verify GPU, data and software
 
 ```bash
 python - <<'PY'
 import torch
-from pathlib import Path
 from smartlens.config import load_yaml
 from smartlens.data.datasets import DataModule
+
 assert torch.cuda.is_available(), 'PyTorch cannot access CUDA'
 p = torch.cuda.get_device_properties(0)
 print('GPU:', p.name)
@@ -77,7 +87,7 @@ print('VRAM GiB:', round(p.total_memory / 2**30, 2))
 print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)
 print('BF16:', torch.cuda.is_bf16_supported())
 assert torch.cuda.is_bf16_supported(), 'The configured AMP path uses BF16'
-for config in ['configs/mvtec_unified.yaml', 'configs/visa_pcb.yaml']:
+for config in ['configs/mvtec_unified.yaml', 'configs/visa_pcb.yaml', 'configs/visa_all.yaml']:
     dm = DataModule(load_yaml(config)['data'])
     for category in dm.categories:
         for split in ['train', 'val_normal', 'test_val', 'test']:
@@ -85,12 +95,12 @@ for config in ['configs/mvtec_unified.yaml', 'configs/visa_pcb.yaml']:
                 assert (dm.root / record['image']).is_file(), record['image']
                 if record['mask']:
                     assert (dm.root / record['mask']).is_file(), record['mask']
-    print(dm.name, 'verified categories:', len(dm.categories))
+    print(config, 'verified categories:', len(dm.categories))
 PY
 
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python -m pytest -q
 mkdir -p runs/environment
-python -m pip freeze > runs/environment/requirements.freeze.txt
+uv pip freeze --python .venv/bin/python > runs/environment/requirements.freeze.txt
 nvidia-smi > runs/environment/nvidia-smi.txt
 sha256sum configs/splits/*.json > runs/environment/split_hashes.txt
 ```
@@ -105,20 +115,24 @@ Use a disposable run directory. This tests actual forward, backward and optimize
 allocations at 448px / batch 16 without gradient checkpointing:
 
 ```bash
-python scripts/train.py \
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python scripts/train.py \
     --data configs/mvtec_unified.yaml \
     --model configs/models/dinomaly_24gb.yaml \
     --run-dir runs/hardware_probe/dinomaly \
     --num-workers 6 --set model.train.iters=20
 
 cat runs/hardware_probe/dinomaly/train_summary.json
+rm -rf runs/hardware_probe
 ```
 
-Check `peak_train_vram_MB`, `peak_train_reserved_MB` and `train_time_s`. The short
-probe includes startup and is not a reliable steady-state throughput measurement.
-For a scheduling estimate, repeat with a fresh directory and 1,000 steps and inspect
-the difference between the 500- and 1,000-step log timestamps. Do not treat these
-shortened-training checkpoints as benchmark models.
+Check `peak_train_vram_MB`, `peak_train_reserved_MB` and `train_time_s`, then remove
+`runs/hardware_probe` so disposable probe checkpoints are not synced back in step 7.
+The short probe includes image-preload startup and is not a reliable steady-state
+throughput measurement. For a scheduling estimate, repeat with
+`--set model.train.iters=1000`, inspect the `time_s` difference between `iter: 500` and
+`iter: 1000` in `runs/hardware_probe/dinomaly/train_log_unified.jsonl`, and delete
+`runs/hardware_probe` afterward. Do not treat shortened-training checkpoints as benchmark
+models.
 
 The local memory-scaling probe measured 3.13GiB allocated at batch 4 and 4.64GiB at
 batch 8, with BF16 and no checkpointing. Extrapolated batch-16 allocation is ~7.65GiB;
@@ -128,11 +142,17 @@ a new profile after its implementation, especially for the guided upsampler.
 
 ## 6. Train and evaluate the complete baseline suite
 
-Keep the SSH-independent session alive:
+Start an SSH-independent `tmux` session on the **GPU machine**:
 
 ```bash
 tmux new -s smartlens
-cd /home/user/SmartLens
+```
+
+Inside the `tmux` session, activate the environment and prepare logging:
+
+```bash
+export REMOTE_DIR=/home/user/SmartLens
+cd "$REMOTE_DIR"
 source .venv/bin/activate
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
@@ -172,7 +192,7 @@ Evaluation includes clean and all five shift conditions with clean-validation th
 To evaluate an existing run again without training:
 
 ```bash
-python scripts/evaluate.py --run runs/mvtec_ad/dinomaly --data configs/mvtec_unified.yaml --optshift
+python scripts/evaluate.py --run runs/mvtec_ad/dinomaly --optshift
 python scripts/summarize.py --runs-root runs/mvtec_ad --tag test_optshift
 ```
 
@@ -182,11 +202,11 @@ resume exactly. `--skip-existing` skips completed checkpoints; it is not step-le
 
 ## 7. Retrieve the results
 
-On the **laptop** (using the variables from step 2):
+From the **local repository root** (using the variables from step 2):
 
 ```bash
 mkdir -p runs/remote_gpu
-rsync -avh --progress "$REMOTE:$REMOTE_DIR/runs/" runs/remote_gpu/
+rsync -avh --progress --exclude='hardware_probe/' "$REMOTE:$REMOTE_DIR/runs/" runs/remote_gpu/
 ```
 
 Keep the environment snapshot, split hashes and logs with the results. Report the
