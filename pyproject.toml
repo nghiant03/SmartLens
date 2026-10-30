@@ -26,8 +26,25 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
 
+[dependency-groups]
+dev = ["pytest>=7.4"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
 [tool.setuptools.packages.find]
 include = ["smartlens*"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests"]

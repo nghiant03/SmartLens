@@ -22,9 +22,8 @@ For another GPU machine, follow [REMOTE_TRAINING.md](REMOTE_TRAINING.md), includ
 project/data transfer, environment verification, full-suite commands and compute estimates.
 
 ```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python torch torchvision --index-url https://download.pytorch.org/whl/cu128
-uv pip install --python .venv/bin/python -e ".[dev]"
+uv sync --locked
+source .venv/bin/activate
 ```
 
 All artefacts stay inside the repository (all git-ignored):

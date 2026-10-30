@@ -48,8 +48,7 @@ the split manifests on the new machine: every model must use the same held-out i
 On the **GPU machine** (set `REMOTE_DIR` to match step 2):
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y curl rsync tmux
+sudo apt-get update && sudo apt-get install -y curl rsync tmux
 command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | sh)
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -57,20 +56,16 @@ export REMOTE_DIR=/home/user/SmartLens
 cd "$REMOTE_DIR"
 nvidia-smi
 
-uv venv --python 3.12 .venv
+uv sync --locked
 source .venv/bin/activate
-uv pip install --python .venv/bin/python torch torchvision \
-    --index-url https://download.pytorch.org/whl/cu128
-uv pip install --python .venv/bin/python -e ".[dev]"
-uv pip check --python .venv/bin/python
 ```
 
-`uv venv --python 3.12` provisions Python 3.12 automatically if it is not installed
-system-wide. Project and test dependencies are resolved from `pyproject.toml` (the
-audited environment used `torch==2.11.0+cu128`, `torchvision==0.26.0+cu128` and
-`timm==1.0.30`); save the exact resolved environment in step 4. The PyTorch wheels supply
-their CUDA user-space dependencies, so no separate CUDA toolkit installation is needed
-for this project's Python code. The NVIDIA host driver is still required.
+`uv sync --locked` reads `.python-version` (`3.12`), `pyproject.toml` (including the
+explicit `pytorch-cu128` wheel index for `torch` and `torchvision`) and `uv.lock` to
+provision Python 3.12, `.venv`, hash-verified dependencies (`torch==2.11.0+cu128`,
+`torchvision==0.26.0+cu128`, `timm==1.0.30`, `pytest`) and editable `smartlens` in one
+step. The PyTorch wheels supply their CUDA user-space dependencies, so no separate CUDA
+toolkit installation is needed; a compatible NVIDIA host driver is still required.
 
 ## 4. Verify GPU, data and software
 
