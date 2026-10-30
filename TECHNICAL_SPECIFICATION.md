@@ -302,7 +302,7 @@ exact reproduction of the upstream crop, initialization, split and mask conventi
 SmartLens/
 ├── Visual_Defect_Detection_Project_Proposal.docx
 ├── TECHNICAL_SPECIFICATION.md          # This specification document
-├── pyproject.toml / requirements.txt
+├── pyproject.toml
 ├── configs/
 │   ├── mvtec_unified.yaml              # Unified 15-class MVTec AD config
 │   ├── visa_pcb.yaml                   # VisA micro-defect config
