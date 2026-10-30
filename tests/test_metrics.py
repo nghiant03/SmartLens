@@ -4,7 +4,8 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 
 from smartlens.evaluation.calibration import calibrate_from_val_normal, f1_threshold
 from smartlens.evaluation.metrics import (au_pro, auroc, average_precision, compute_pro_curve, f1_max, fpr_at_tpr,
-                                          pixel_metrics, threshold_metrics, tpr_at_fpr, trapezoid)
+                                          paired_bootstrap_ci, per_image_pixel_ap, pixel_metrics, threshold_metrics,
+                                          tpr_at_fpr, trapezoid)
 
 
 @pytest.fixture
@@ -93,3 +94,45 @@ def test_calibration_thresholds():
     assert np.mean(s >= c.tau_unsup_p99) == pytest.approx(0.01, abs=0.006)
     assert f1_threshold(np.array([0, 0, 1, 1]), np.array([0.1, 0.2, 0.8, 0.9])) == pytest.approx(0.8)
     assert f1_threshold(np.zeros(3), np.arange(3)) is None
+
+
+def test_per_image_pixel_ap_and_paired_bootstrap_ci():
+    gt = np.zeros((3, 8, 8), dtype=np.uint8)
+    gt[2, 2:6, 2:6] = 1
+    amap = np.zeros((3, 8, 8), dtype=np.float32)
+    amap[2, 2:6, 2:6] = 1.0
+    pap = per_image_pixel_ap(amap, gt, np.array([0, 1, 1]))
+    assert np.isnan(pap[0]) and np.isnan(pap[1])
+    assert pap[2] == pytest.approx(1.0)
+
+    def make_cat(cat: str, good_scores, bad_scores, ap_val: float):
+        paths = [f"{cat}_{i}.png" for i in range(len(good_scores) + len(bad_scores))]
+        labels = [0] * len(good_scores) + [1] * len(bad_scores)
+        scores = list(good_scores) + list(bad_scores)
+        anom_ap = [None] * len(good_scores) + [ap_val] * len(bad_scores)
+        return {
+            "category": cat,
+            "calibration": {"tau_unsup_p99": 0.5, "tau_f1": 0.5},
+            "predictions": {
+                "paths": paths, "labels": labels, "scores": scores,
+                "anom_p_ap": anom_ap,
+                "optshift_scores": {"gamma_low": [s + 0.05 for s in scores]},
+            },
+        }
+
+    ref = [make_cat("bottle", [0.1, 0.4, 0.6, 0.2], [0.45, 0.55, 0.7, 0.35], 0.55),
+           make_cat("screw", [0.2, 0.55, 0.3, 0.1], [0.4, 0.6, 0.52, 0.3], 0.50)]
+    cand = [make_cat("bottle", [0.05, 0.1, 0.15, 0.08], [0.85, 0.9, 0.95, 0.88], 0.92),
+            make_cat("screw", [0.04, 0.12, 0.09, 0.07], [0.82, 0.91, 0.87, 0.93], 0.89)]
+    rows = {r["metric"]: r for r in paired_bootstrap_ci(ref, cand, n_boot=300, seed=7)}
+    assert rows["I-AUROC"]["diff"] > 0.15
+    assert rows["I-AUROC"]["ci_low"] <= rows["I-AUROC"]["diff"] <= rows["I-AUROC"]["ci_high"]
+    assert rows["I-AUROC"]["ci_excludes_zero"] is True
+    assert rows["Img-P-AP"]["diff"] == pytest.approx(0.905 - 0.525)
+    assert rows["Img-P-AP"]["ci_excludes_zero"] is True
+    assert "optshift_mean/I-AUROC" in rows and rows["optshift_mean/I-AUROC"]["diff"] > 0
+
+    misaligned = [dict(cand[0], predictions={**cand[0]["predictions"], "paths": list(reversed(cand[0]["predictions"]["paths"]))}),
+                  cand[1]]
+    with pytest.raises(ValueError, match="Unaligned test image order"):
+        paired_bootstrap_ci(ref, misaligned, n_boot=10)

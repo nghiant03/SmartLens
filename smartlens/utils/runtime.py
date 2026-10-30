@@ -16,9 +16,10 @@ def setup_env() -> None:
     """Keep every downloaded artefact (pretrained weights) inside the repository."""
     os.environ.setdefault("TORCH_HOME", str(PROJECT_ROOT / "weights" / "torch"))
     os.environ.setdefault("HF_HOME", str(PROJECT_ROOT / "weights" / "huggingface"))
+    allow_tf32 = os.environ.get("SMARTLENS_ALLOW_TF32", "1").strip().lower() not in ("0", "false", "no")
     torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+    torch.backends.cudnn.allow_tf32 = allow_tf32
 
 
 def seed_everything(seed: int = 42) -> None:

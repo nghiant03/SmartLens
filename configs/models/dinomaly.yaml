@@ -8,8 +8,8 @@ fuse_layer_encoder: [[0, 1, 2, 3], [4, 5, 6, 7]]
 fuse_layer_decoder: [[0, 1, 2, 3], [4, 5, 6, 7]]
 decoder_depth: 8
 bottleneck_dropout: 0.2
-amp: true
-grad_checkpoint: true                 # required on the audited 8GB laptop; measure on target hardware
+amp: false                            # uniform FP32/TF32 for fair architectural comparison; set true for BF16 deployment/8GB GPUs
+grad_checkpoint: true                 # required on the audited 8GB laptop; disable on 24GB+ target hardware
 train:
   iters: 10000
   batch_size: 16

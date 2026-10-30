@@ -72,16 +72,17 @@ toolkit installation is needed; a compatible NVIDIA host driver is still require
 ```bash
 python - <<'PY'
 import torch
+from smartlens.utils.runtime import setup_env
 from smartlens.config import load_yaml
 from smartlens.data.datasets import DataModule
 
+setup_env()
 assert torch.cuda.is_available(), 'PyTorch cannot access CUDA'
 p = torch.cuda.get_device_properties(0)
 print('GPU:', p.name)
 print('VRAM GiB:', round(p.total_memory / 2**30, 2))
 print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)
-print('BF16:', torch.cuda.is_bf16_supported())
-assert torch.cuda.is_bf16_supported(), 'The configured AMP path uses BF16'
+print('TF32 matmul:', torch.backends.cuda.matmul.allow_tf32, 'BF16:', torch.cuda.is_bf16_supported())
 for config in ['configs/mvtec_unified.yaml', 'configs/visa_pcb.yaml', 'configs/visa_all.yaml']:
     dm = DataModule(load_yaml(config)['data'])
     for category in dm.categories:
@@ -100,8 +101,10 @@ nvidia-smi > runs/environment/nvidia-smi.txt
 sha256sum configs/splits/*.json > runs/environment/split_hashes.txt
 ```
 
-The expected test count at this revision is 29. Default dataset locations are
-`datasets/mvtec_ad/` and `datasets/visa/`. For another storage mount, set
+The expected test count at this revision is 35. All baselines default to uniform full
+precision (`amp: false` with Ampere+ TF32 Tensor Cores enabled; set
+`SMARTLENS_ALLOW_TF32=0` only if strict IEEE-754 FP32 is required). Default dataset
+locations are `datasets/mvtec_ad/` and `datasets/visa/`. For another storage mount, set
 `SMARTLENS_DATA_ROOT` to the parent directory containing those two folders.
 
 ## 5. Profile the target before the full run
@@ -129,11 +132,12 @@ throughput measurement. For a scheduling estimate, repeat with
 `runs/hardware_probe` afterward. Do not treat shortened-training checkpoints as benchmark
 models.
 
-The local memory-scaling probe measured 3.13GiB allocated at batch 4 and 4.64GiB at
-batch 8, with BF16 and no checkpointing. Extrapolated batch-16 allocation is ~7.65GiB;
-runtime/workspace/allocator overhead is additional. **24GB should comfortably fit the
-current Dinomaly recipe**, subject to this target-machine check. HiRes-ProtoAD needs
-a new profile after its implementation, especially for the guided upsampler.
+With uniform full precision (`amp: false`, TF32 enabled) and no checkpointing, the local
+memory-scaling probe measured 3.86GiB allocated at batch 4 and 6.21GiB at batch 8 (vs.
+3.13GiB and 4.64GiB under BF16 AMP). Extrapolated batch-16 allocation is ~10.9GiB
+(~12–13GiB reserved including workspace/allocator overhead). **24GB comfortably fits the
+uniform FP32/TF32 Dinomaly recipe**, subject to this target-machine check. HiRes-ProtoAD
+needs a new profile after its implementation, especially for the guided upsampler.
 
 ## 6. Train and evaluate the complete baseline suite
 
@@ -173,7 +177,10 @@ python scripts/run_baselines.py \
 
 The override disables checkpointing for Dinomaly; the other models do not use it.
 All three baselines (SSIM-CAE, PatchCore and Dinomaly) run once with **seed 42**
-at their full configured budgets. Do not pass `--categories`
+in uniform full precision (`amp: false`, TF32 Tensor Cores) at their full configured
+budgets. To include the resolution-matched 448px PatchCore control alongside the default
+256px PatchCore recipe, pass `--models ssim_cae patchcore patchcore_448 dinomaly` (it
+writes to `patchcore_448/` without overwriting `patchcore/`). Do not pass `--categories`
 for these full experiments. The VisA command covers the planned six-category slice.
 For a separate full 12-category VisA experiment, use `configs/visa_all.yaml` and a
 distinct run root such as `runs/visa_all`; do not overwrite the six-category run.
@@ -181,14 +188,22 @@ distinct run root such as `runs/visa_all`; do not overwrite the six-category run
 Detach tmux with Ctrl-B then D; reconnect using `tmux attach -t smartlens`.
 
 Outputs include each model's `train_summary.json`, checkpoints, and
-`eval/results_test_optshift.json`. Comparison tables are written under the run roots.
+`eval/results_test_optshift.json` (including per-image predictions, resolution-matched
+448px latency across all deployed checkpoints, and total deployed parameter/buffer
+footprint). Comparison tables and paired image-level bootstrap 95% confidence intervals
+(`comparison_test_optshift_paired_bootstrap.csv`) are written under the run roots.
 Evaluation includes clean and all five shift conditions with clean-validation thresholds.
 
-To evaluate an existing run again without training:
+To evaluate an existing run again without training (including under category-blind
+`pooled` calibration, which writes `*_pooled` tags alongside `per_category`):
 
 ```bash
 python scripts/evaluate.py --run runs/mvtec_ad/dinomaly --optshift
 python scripts/summarize.py --runs-root runs/mvtec_ad --tag test_optshift
+
+# Category-blind pooled calibration across all evaluated runs:
+python scripts/run_baselines.py --data configs/mvtec_unified.yaml \
+    --runs-root runs/mvtec_ad --eval-only --optshift --calibration-scope pooled
 ```
 
 Current model snapshots

@@ -3,6 +3,7 @@
 
     python scripts/evaluate.py --run runs/mvtec_ad/patchcore
     python scripts/evaluate.py --run runs/mvtec_ad/patchcore --optshift
+    python scripts/evaluate.py --run runs/mvtec_ad/dinomaly --optshift --calibration-scope pooled
     python scripts/evaluate.py --run runs/mvtec_ad/dinomaly --split test --no-gallery
 
 Outputs land in ``<run>/eval/``: ``metrics_<tag>.csv`` (per category + mean),
@@ -33,6 +34,8 @@ def main() -> None:
     ap.add_argument("--data", default=None, help="optional data config to override the run's data/eval section")
     ap.add_argument("--categories", nargs="*", default=None)
     ap.add_argument("--split", default="test", choices=["test", "test_val"])
+    ap.add_argument("--calibration-scope", default=None, choices=["per_category", "pooled"],
+                    help="threshold calibration scope (default: per_category)")
     ap.add_argument("--optshift", action="store_true", help="also evaluate MVTec-OptShift perturbations")
     ap.add_argument("--no-latency", action="store_true")
     ap.add_argument("--no-gallery", action="store_true")
@@ -47,7 +50,7 @@ def main() -> None:
     eval_over = apply_overrides({}, args.set)
     evaluate(resolve_path(args.run), get_device(args.device), data_cfg, args.categories, args.split,
              optshift=args.optshift, latency=not args.no_latency, gallery=not args.no_gallery,
-             eval_overrides=eval_over, tag=args.tag)
+             eval_overrides=eval_over, tag=args.tag, calibration_scope=args.calibration_scope)
 
 
 if __name__ == "__main__":

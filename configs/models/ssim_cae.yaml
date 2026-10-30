@@ -4,6 +4,7 @@ setting: per_class
 input_size: 256
 latent_dim: 256
 base_channels: 32
+amp: false                # uniform FP32/TF32 across baselines; set true for BF16 deployment
 train:
   iters: 4000
   batch_size: 16

@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from smartlens.data.datasets import make_loader
 from smartlens.models.base import AnomalyModel, FitContext, freeze, gaussian_blur, imagenet_normalize, log
+from smartlens.models.baselines.common import autocast
 
 
 class WRNFeatures(nn.Module):
@@ -102,6 +103,7 @@ class PatchCore(AnomalyModel):
         self.num_neighbors = cfg.get("num_neighbors", 9)
         self.blur_sigma = cfg.get("blur_sigma", 4.0)
         self.patch_size = cfg.get("patch_size", 3)
+        self.amp = cfg.get("amp", False)
         self.register_buffer("memory_bank", torch.empty(0, 0))
         self.feat_hw: tuple[int, int] | None = None
 
@@ -112,9 +114,11 @@ class PatchCore(AnomalyModel):
 
     @torch.no_grad()
     def embed(self, images: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
-        feats = self.backbone(imagenet_normalize(self.prepare(images)))
+        x = imagenet_normalize(self.prepare(images))
+        with autocast(x.device, self.amp):
+            feats = self.backbone(x)
         pool = nn.AvgPool2d(self.patch_size, 1, self.patch_size // 2)
-        feats = [pool(f) for f in feats]
+        feats = [pool(f.float()) for f in feats]
         hw = feats[0].shape[-2:]
         feats = [feats[0]] + [F.interpolate(f, size=hw, mode="bilinear", align_corners=False) for f in feats[1:]]
         emb = torch.cat(feats, dim=1)  # (B, C, h, w)

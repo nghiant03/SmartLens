@@ -1,12 +1,13 @@
 import torch
 import torch.nn.functional as F
 
-from smartlens.config import PROJECT_ROOT
+from smartlens.config import PROJECT_ROOT, load_yaml
 from smartlens.losses.ssim import ms_ssim_loss, ssim_map
 from smartlens.models.base import gaussian_kernel1d
 from smartlens.models.baselines.dinomaly import LinearAttention, global_cosine_hm_percent
 from smartlens.models.baselines.patchcore import chunked_nn, greedy_coreset
 from smartlens.models.baselines.ssim_cae import SSIMCAE
+from smartlens.pipeline import default_run_dir, load_experiment
 
 
 def _ref_ssim_2d(x: torch.Tensor, y: torch.Tensor, window: int = 11, sigma: float = 1.5) -> torch.Tensor:
@@ -62,6 +63,18 @@ def test_linear_attention_and_hm_loss():
     loss.backward()
     nz = (de[0].grad.abs().sum(1) > 0).float().mean().item()
     assert 0 < nz <= 0.2
+
+
+def test_uniform_precision_defaults_and_patchcore_448_run_dir():
+    for cfg_name in ("ssim_cae", "patchcore", "patchcore_448", "dinomaly", "dinomaly_24gb"):
+        mcfg = load_yaml(f"configs/models/{cfg_name}.yaml")
+        assert mcfg["amp"] is False, f"{cfg_name}.yaml should default to uniform full precision (amp: false)"
+    assert SSIMCAE({"name": "ssim_cae", "input_size": 64, "latent_dim": 8, "base_channels": 4}).amp is False
+    cfg_224 = load_experiment("configs/mvtec_unified.yaml", "configs/models/patchcore.yaml")
+    cfg_448 = load_experiment("configs/mvtec_unified.yaml", "configs/models/patchcore_448.yaml")
+    assert cfg_448["model"]["input_size"] == 448
+    assert default_run_dir(cfg_224).name == "patchcore"
+    assert default_run_dir(cfg_448).name == "patchcore_448"
 
 
 def test_no_dataset_download_scripts_in_codebase():

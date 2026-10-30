@@ -11,3 +11,4 @@ coreset_proj_dim: 128
 num_neighbors: 9
 blur_sigma: 4.0
 batch_size: 16
+amp: false                  # uniform FP32/TF32 across baselines; set true for BF16 deployment

@@ -1,0 +1,5 @@
+# Resolution-matched PatchCore control (448x448 input, matching Dinomaly / HiRes-ProtoAD).
+# Separates architectural differences from the 256 -> 448 input-resolution gap on micro-defects.
+_base_: patchcore.yaml
+run_name: patchcore_448
+input_size: 448

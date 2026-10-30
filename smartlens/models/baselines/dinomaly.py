@@ -121,7 +121,7 @@ class Dinomaly(AnomalyModel):
         s = cfg.get("score", {})
         self.blur_sigma, self.blur_ks = s.get("blur_sigma", 4.0), s.get("blur_kernel_size", 5)
         self.max_ratio = s.get("image_topk_ratio", 0.01)
-        self.amp = cfg.get("amp", True)
+        self.amp = cfg.get("amp", False)
         self.grad_checkpoint = cfg.get("grad_checkpoint", True)
         self._init_weights()
 

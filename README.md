@@ -13,7 +13,7 @@ benchmark saturation findings and the measured training-environment bottleneck.
 | ID | Baseline | Paradigm | Setting | Code |
 |---|---|---|---|---|
 | B1 | **SSIM-CAE** | Conv. autoencoder, L1 + multi-scale SSIM | per category | [`ssim_cae.py`](smartlens/models/baselines/ssim_cae.py) |
-| B2a | **PatchCore** (CVPR'22) | WRN50-2 layer2+3, 10 % greedy coreset, k-NN | per category | [`patchcore.py`](smartlens/models/baselines/patchcore.py) |
+| B2a | **PatchCore** (CVPR'22) | WRN50-2 layer2+3, 10 % greedy coreset, k-NN (`256` default + [`patchcore_448.yaml`](configs/models/patchcore_448.yaml) control) | per category | [`patchcore.py`](smartlens/models/baselines/patchcore.py) |
 | B3 | **Dinomaly-Repro** (CVPR'25) = ablation A0 | Frozen DINOv2-Reg + noisy bottleneck + linear-attention decoder | **unified** (1 model, 15 classes) | [`dinomaly.py`](smartlens/models/baselines/dinomaly.py) |
 
 ## Setup
@@ -82,13 +82,15 @@ explicitly for a subset. Reports show category and image counts and reject compa
 with differing category sets or evaluation protocols. Historical ensemble and EfficientAD artifacts are
 excluded from regenerated comparisons.
 
-### Training hardware
+### Training hardware & precision
 
-The audited RTX 5050 Laptop (8GB) runs Dinomaly at 448px/batch 16 with BF16 and gradient
-checkpointing; the same batch without checkpointing runs out of memory. Full experiments
-will use the **user-selected 24GB+ GPU** (see [`REMOTE_TRAINING.md`](REMOTE_TRAINING.md)
-for full transfer, `tmux` session setup and result retrieval). Its model config preserves
-the architecture and optimization budget:
+All models default to **uniform full precision** (`amp: false` with Ampere+ TF32 Tensor
+Cores enabled; set `SMARTLENS_ALLOW_TF32=0` for strict IEEE-754 FP32) so architectural
+comparisons are not confounded by mixed-precision asymmetry. On an 8GB laptop GPU, pass
+`--set model.amp=true` (with `grad_checkpoint=true`) for local smoke tests; full
+experiments use a **24GB+ GPU** (~10.9GiB allocated for Dinomaly at 448px/batch 16 without
+gradient checkpointing — see [`REMOTE_TRAINING.md`](REMOTE_TRAINING.md) for transfer,
+`tmux` setup and retrieval):
 
 ```bash
 # On the target 24GB+ GPU: first verify memory in a disposable directory, then clean it up.
@@ -118,26 +120,30 @@ and model config. `--skip-existing` cannot overwrite run metadata with a changed
 ## Evaluation outputs (`<run>/eval/`)
 
 * `metrics_<tag>.csv` / `summary_<tag>.md` — per category + mean:
-  **P-AP, AU-PRO (≤5 % and ≤30 % FPR)**, **I-FPR@95%TPR, I-TPR@1%FPR**, **I-AUROC, I-AP, I-F1max**,
+  **P-AP, Img-P-AP, AU-PRO (≤5 % and ≤30 % FPR)**, **I-FPR@95%TPR, I-TPR@1%FPR**, **I-AUROC, I-AP, I-F1max**,
   **Precision / Recall / F1 / FPR** at τ_unsup and τ_f1, **P-AUROC, P-F1max**;
   recall per defect sub-type in `results_<tag>.json`.
-* `results_<tag>.json` — also contains calibration (pixel quantiles, thresholds) and the system profile:
-  **latency (CUDA events, bs=1, 50 warm-up / 200 timed), FPS, peak VRAM, parameters**.
+* `results_<tag>.json` — also contains calibration, per-image predictions (for paired bootstrap) and the fair system profile:
+  **448×448-output latency (CUDA events, bs=1, mean + max category), FPS, max peak VRAM across checkpoints, per-checkpoint parameters and total deployed footprint (`deployed_checkpoints`, `deployed_footprint_M`)**.
 * `metrics_<tag>_optshift_*.csv` — **MVTec-OptShift** robustness (illumination gradient ±30 %,
   gamma 0.65 / 1.45, specular glare, ±3° / ±4 px affine), thresholds from *clean* validation.
+* `comparison_<tag>_paired_bootstrap.csv` (under `runs/<dataset>/`) — **stratified image-level paired bootstrap 95 % CIs** (`candidate - reference`) across categories and OptShift conditions.
 * `galleries/<category>/{false_alarms,missed_defects,true_positives}.png` + `errors.csv` — error review.
 
 New experiments evaluate all models on a common **448×448 nearest-neighbour mask grid**
 (`data.mask_size`, `data.mask_resize`); saved legacy runs retain **256×256 area/0.5**.
-The protocols must not be mixed. Neither is native-resolution evaluation: resampling
+Protocols (including `amp`, `allow_tf32` and `calibration_scope`) must match in
+`scripts/summarize.py`. Neither grid is native-resolution evaluation: resampling
 can lose or merge tiny defects, so native-region analysis is still required before
 claiming 1–3px micro-defect gains. Reports expose anomalous images with empty resized masks.
 
 Curve metrics are exact (no binning) and tested against scikit-learn (`pytest`).
 F1max and TPR@1%FPR are test-curve diagnostics, not deployment thresholds. Small normal
 sample counts limit low-FPR precision. `--split test_val` omits F1-tuned operating metrics
-to avoid fitting and reporting the threshold on the same split. Current calibration is
-per category, including for the unified baseline.
+to avoid fitting and reporting the threshold on the same split. Calibration defaults to
+`per_category`; pass `--calibration-scope pooled` to `scripts/evaluate.py` or
+`scripts/run_baselines.py` for category-blind threshold calibration and global pooled
+image-ranking evaluation (`*_pooled` tags).
 
 ## Layout
 

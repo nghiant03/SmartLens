@@ -206,3 +206,139 @@ def pixel_metrics(anomaly_maps: np.ndarray, gt_masks: np.ndarray, pro_limit: flo
             out["AU-PRO"] = trapezoid(fprs, pros, x_max=pro_limit) / pro_limit
             out["AU-PRO@5%FPR"] = trapezoid(fprs, pros, x_max=0.05) / 0.05
     return out
+
+
+def per_image_pixel_ap(anomaly_maps: np.ndarray, gt_masks: np.ndarray, labels: np.ndarray) -> list[float]:
+    """Per-image pixel AP on anomalous images with non-empty masks (NaN on normal/empty-mask images)."""
+    out: list[float] = []
+    for i, lbl in enumerate(labels):
+        mask = gt_masks[i] > 0
+        if int(lbl) == 1 and mask.any():
+            out.append(average_precision(mask.ravel(), anomaly_maps[i].ravel().astype(np.float32)))
+        else:
+            out.append(NAN)
+    return out
+
+
+# --------------------------------------------------------------------------------------
+# Paired image-level bootstrap (treats images, never correlated pixels, as independent)
+# --------------------------------------------------------------------------------------
+def _pack_for_bootstrap(results: list[dict]) -> dict[str, dict]:
+    packed = {}
+    for r in results:
+        pred = r.get("predictions")
+        if not pred:
+            raise ValueError(f"Category {r.get('category')!r} lacks per-image predictions for paired bootstrap.")
+        cal = r.get("calibration", {})
+        labels = np.asarray(pred["labels"], dtype=np.int64)
+        packed[r["category"]] = {
+            "paths": list(pred["paths"]),
+            "labels": labels,
+            "norm_idx": np.flatnonzero(labels == 0),
+            "anom_idx": np.flatnonzero(labels == 1),
+            "scores": np.asarray(pred["scores"], dtype=np.float64),
+            "anom_p_ap": (np.array([NAN if v is None else float(v) for v in pred["anom_p_ap"]], dtype=np.float64)
+                          if "anom_p_ap" in pred and pred["anom_p_ap"] is not None else None),
+            "optshift_scores": {k: np.asarray(v, dtype=np.float64)
+                                for k, v in (pred.get("optshift_scores") or {}).items()},
+            "tau_unsup": float(cal["tau_unsup_p99"]),
+            "tau_f1": float(cal["tau_f1"]) if cal.get("tau_f1") is not None else None,
+        }
+    return packed
+
+
+def _eval_bootstrap_sample(packed: dict[str, dict], sample_idx: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]],
+                           perts: list[str], has_f1: bool, has_img_pap: bool) -> dict[str, float]:
+    cats = list(packed.keys())
+    vals: dict[str, list[float]] = {
+        "I-AUROC": [], "I-AP": [], "I-FPR@95TPR": [],
+        "at_tau_unsup/recall": [], "at_tau_unsup/fpr": [],
+    }
+    if has_f1:
+        vals["at_tau_f1/f1"] = []
+    if has_img_pap:
+        vals["Img-P-AP"] = []
+    if perts:
+        vals["optshift_mean/I-AUROC"] = []
+        vals["optshift_mean/at_tau_unsup/fpr"] = []
+
+    for c in cats:
+        d = packed[c]
+        b_norm, b_anom, b_all = sample_idx[c]
+        y, s = d["labels"][b_all], d["scores"][b_all]
+        vals["I-AUROC"].append(auroc(y, s))
+        vals["I-AP"].append(average_precision(y, s))
+        vals["I-FPR@95TPR"].append(fpr_at_tpr(y, s, 0.95))
+        vals["at_tau_unsup/recall"].append(float(np.mean(d["scores"][b_anom] >= d["tau_unsup"]))
+                                           if b_anom.size else NAN)
+        vals["at_tau_unsup/fpr"].append(float(np.mean(d["scores"][b_norm] >= d["tau_unsup"]))
+                                        if b_norm.size else NAN)
+        if has_f1 and d["tau_f1"] is not None:
+            vals["at_tau_f1/f1"].append(threshold_metrics(y, s, d["tau_f1"])["f1"])
+        if has_img_pap and d["anom_p_ap"] is not None:
+            ap = d["anom_p_ap"][b_anom]
+            vals["Img-P-AP"].append(float(np.nanmean(ap)) if np.isfinite(ap).any() else NAN)
+        if perts:
+            opt_auroc, opt_fpr = [], []
+            for p in perts:
+                sp = d["optshift_scores"][p]
+                opt_auroc.append(auroc(y, sp[b_all]))
+                opt_fpr.append(float(np.mean(sp[b_norm] >= d["tau_unsup"])) if b_norm.size else NAN)
+            vals["optshift_mean/I-AUROC"].append(float(np.nanmean(opt_auroc)))
+            vals["optshift_mean/at_tau_unsup/fpr"].append(float(np.nanmean(opt_fpr)))
+    return {k: float(np.nanmean(v)) if v else NAN for k, v in vals.items()}
+
+
+def paired_bootstrap_ci(ref_results: list[dict], cand_results: list[dict], n_boot: int = 1000,
+                        seed: int = 42, ci: float = 0.95) -> list[dict]:
+    """Stratified image-level paired bootstrap CI for ``candidate - reference`` macro-means."""
+    ref = _pack_for_bootstrap(ref_results)
+    cand = _pack_for_bootstrap(cand_results)
+    if set(ref) != set(cand):
+        raise ValueError(f"Mismatched category sets in paired bootstrap: {sorted(ref)} vs {sorted(cand)}")
+    cats = sorted(ref)
+    for c in cats:
+        if ref[c]["paths"] != cand[c]["paths"] or not np.array_equal(ref[c]["labels"], cand[c]["labels"]):
+            raise ValueError(f"Unaligned test image order/labels in category {c!r}; cannot pair bootstrap.")
+
+    has_f1 = all(ref[c]["tau_f1"] is not None and cand[c]["tau_f1"] is not None for c in cats)
+    has_img_pap = all(ref[c]["anom_p_ap"] is not None and cand[c]["anom_p_ap"] is not None for c in cats)
+    perts = sorted(set.intersection(*(set(ref[c]["optshift_scores"]) & set(cand[c]["optshift_scores"]) for c in cats))) \
+        if cats else []
+
+    obs_idx = {c: (ref[c]["norm_idx"], ref[c]["anom_idx"], np.arange(len(ref[c]["labels"]))) for c in cats}
+    ref_obs = _eval_bootstrap_sample(ref, obs_idx, perts, has_f1, has_img_pap)
+    cand_obs = _eval_bootstrap_sample(cand, obs_idx, perts, has_f1, has_img_pap)
+    metrics = list(ref_obs.keys())
+    deltas = {m: np.empty(n_boot, dtype=np.float64) for m in metrics}
+
+    rng = np.random.default_rng(seed)
+    for b in range(n_boot):
+        b_idx = {}
+        for c in cats:
+            ni, ai = ref[c]["norm_idx"], ref[c]["anom_idx"]
+            bn = rng.choice(ni, size=ni.size, replace=True) if ni.size else ni
+            ba = rng.choice(ai, size=ai.size, replace=True) if ai.size else ai
+            b_idx[c] = (bn, ba, np.concatenate([bn, ba]))
+        r_b = _eval_bootstrap_sample(ref, b_idx, perts, has_f1, has_img_pap)
+        c_b = _eval_bootstrap_sample(cand, b_idx, perts, has_f1, has_img_pap)
+        for m in metrics:
+            deltas[m][b] = c_b[m] - r_b[m]
+
+    alpha = (1.0 - ci) / 2.0
+    rows = []
+    for m in metrics:
+        d = deltas[m]
+        finite = d[np.isfinite(d)]
+        lo, hi = (np.percentile(finite, [100 * alpha, 100 * (1 - alpha)]) if finite.size else (NAN, NAN))
+        rows.append({
+            "metric": m,
+            "ref": ref_obs[m],
+            "cand": cand_obs[m],
+            "diff": cand_obs[m] - ref_obs[m],
+            "ci_low": float(lo),
+            "ci_high": float(hi),
+            "std_err": float(np.std(finite, ddof=1)) if finite.size > 1 else NAN,
+            "ci_excludes_zero": bool(np.isfinite(lo) and np.isfinite(hi) and (lo > 0 or hi < 0)),
+        })
+    return rows

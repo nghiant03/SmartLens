@@ -25,14 +25,17 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from summarize import summarize  # noqa: E402
 
 ALL = ["ssim_cae", "patchcore", "dinomaly"]
+CHOICES = ["ssim_cae", "patchcore", "patchcore_448", "dinomaly"]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default="configs/mvtec_unified.yaml")
-    ap.add_argument("--models", nargs="*", default=ALL, choices=ALL)
+    ap.add_argument("--models", nargs="*", default=ALL, choices=CHOICES)
     ap.add_argument("--categories", nargs="*", default=None)
     ap.add_argument("--runs-root", default=None, help="default: runs/<dataset>")
+    ap.add_argument("--calibration-scope", default=None, choices=["per_category", "pooled"],
+                    help="threshold calibration scope (default: per_category)")
     ap.add_argument("--optshift", action="store_true")
     ap.add_argument("--skip-existing", action="store_true", help="skip categories that already have checkpoints")
     ap.add_argument("--eval-only", action="store_true")
@@ -43,6 +46,7 @@ def main() -> None:
 
     setup_logging()
     device = get_device(args.device)
+    tag = ("test_optshift" if args.optshift else "test") + ("_pooled" if args.calibration_scope == "pooled" else "")
     runs_root = None
     for name in args.models:
         seed_everything(42)
@@ -56,9 +60,9 @@ def main() -> None:
         if not args.eval_only:
             train(cfg, run_dir, device, args.categories, args.num_workers, args.skip_existing)
         evaluate(run_dir, device, categories=args.categories, optshift=args.optshift,
-                 tag="test_optshift" if args.optshift else "test")
+                 tag=tag, calibration_scope=args.calibration_scope)
     if runs_root is not None:
-        summarize(runs_root, "test_optshift" if args.optshift else "test")
+        summarize(runs_root, tag)
 
 
 if __name__ == "__main__":

@@ -78,7 +78,7 @@ class SSIMCAE(AnomalyModel):
         self.blur_sigma = s.get("blur_sigma", 4.0)
         self.topk_ratio = s.get("image_topk_ratio", 0.0)
         self.ssim_scales = cfg.get("train", {}).get("ssim_scales", 3)
-        self.amp = cfg.get("amp", True)
+        self.amp = cfg.get("amp", False)
 
     def _loss(self, x, x_hat, tcfg):
         return tcfg.get("l1_weight", 1.0) * F.l1_loss(x_hat, x) + \

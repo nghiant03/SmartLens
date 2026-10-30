@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -16,7 +18,7 @@ from tqdm import tqdm
 from smartlens.data.datasets import DataModule, make_loader
 from smartlens.evaluation.calibration import Calibration, calibrate_from_val_normal, f1_threshold
 from smartlens.evaluation.error_analysis import export_error_gallery
-from smartlens.evaluation.metrics import image_metrics, pixel_metrics, threshold_metrics
+from smartlens.evaluation.metrics import image_metrics, per_image_pixel_ap, pixel_metrics, threshold_metrics
 from smartlens.models.base import AnomalyModel, log
 
 
@@ -91,16 +93,48 @@ class Evaluator:
             calib.tau_f1 = f1_threshold(tv.labels, tv.scores)
         return calib
 
+    def calibrate_pooled(self, model_for_category: Callable[[str], AnomalyModel], categories: list[str],
+                         tune_f1: bool = True, max_pixels_per_category: int = 2_000_000) -> Calibration:
+        """Fit one category-blind calibration across pooled validation splits (true label-free deployment)."""
+        map_samples, val_scores = [], []
+        tv_labels, tv_scores = [], []
+        for category in categories:
+            model = model_for_category(category)
+            val = run_inference(model, self._ds(model, category, "val_normal"), self.device, self.bs, self.nw,
+                                f"{category}:val_normal[pooled]")
+            flat = val.maps.ravel()
+            if flat.size > max_pixels_per_category:
+                rng = np.random.default_rng(zlib.crc32(category.encode()))
+                flat = rng.choice(flat, max_pixels_per_category, replace=False)
+            map_samples.append(flat)
+            val_scores.append(val.scores)
+            if tune_f1:
+                tv = run_inference(model, self._ds(model, category, "test_val"), self.device, self.bs, self.nw,
+                                   f"{category}:test_val[pooled]")
+                tv_labels.append(tv.labels)
+                tv_scores.append(tv.scores)
+        calib = calibrate_from_val_normal(np.concatenate(map_samples), np.concatenate(val_scores),
+                                          self.cfg.get("unsup_percentile", 99.0))
+        if tune_f1 and tv_labels:
+            calib.tau_f1 = f1_threshold(np.concatenate(tv_labels), np.concatenate(tv_scores))
+        return calib
+
     def evaluate_category(self, model: AnomalyModel, category: str, split: str = "test",
-                          perturbations: list[str] | None = None, gallery: bool = False) -> dict:
-        calib = self.calibrate(model, category, tune_f1=split != "test_val")
+                          perturbations: list[str] | None = None, gallery: bool = False,
+                          calib: Calibration | None = None) -> dict:
+        if calib is None:
+            calib = self.calibrate(model, category, tune_f1=split != "test_val")
         preds = run_inference(model, self._ds(model, category, split), self.device, self.bs, self.nw,
                               f"{category}:{split}")
         compute_pro = self.cfg.get("compute_pro", True)
         pro_limit = self.cfg.get("pro_integration_limit", 0.3)
+        clean = score_predictions(preds, calib, compute_pro, pro_limit)
+        img_pap = per_image_pixel_ap(preds.maps, preds.masks, preds.labels)
+        clean["Img-P-AP"] = float(np.nanmean(img_pap)) if np.isfinite(img_pap).any() else float("nan")
+        opt_scores: dict[str, list[float]] = {}
         result = {"category": category, "split": split, "calibration": calib.to_dict(),
                   "n_val_normal": len(self.dm.records(category, "val_normal")),
-                  "clean": score_predictions(preds, calib, compute_pro, pro_limit)}
+                  "clean": clean}
         if gallery:
             tau = calib.tau_f1 if calib.tau_f1 is not None else calib.tau_unsup_p99
             vmax = float(np.quantile(preds.maps, 0.9995))
@@ -113,13 +147,34 @@ class Evaluator:
                                     self.bs, self.nw, f"{category}:{split}:{pert}")
             # thresholds stay those calibrated on *clean* validation data (deployment scenario)
             result.setdefault("optshift", {})[pert] = score_predictions(p_preds, calib, compute_pro, pro_limit)
+            opt_scores[pert] = [float(v) for v in p_preds.scores.tolist()]
+        result["predictions"] = {
+            "paths": list(preds.paths),
+            "labels": [int(v) for v in preds.labels.tolist()],
+            "scores": [float(v) for v in preds.scores.tolist()],
+            "anom_p_ap": [None if np.isnan(v) else float(v) for v in img_pap],
+            "optshift_scores": opt_scores,
+        }
         return result
+
+
+def pooled_image_summary(results: list[dict], calib: Calibration) -> dict:
+    """Global image-level ranking and operating metrics across all categories simultaneously."""
+    labels = np.concatenate([np.asarray(r["predictions"]["labels"], dtype=np.int64) for r in results])
+    scores = np.concatenate([np.asarray(r["predictions"]["scores"], dtype=np.float64) for r in results])
+    out: dict = {"n_images": int(len(labels)), "n_anomalous": int(labels.sum()),
+                 "n_normal": int((labels == 0).sum()), **image_metrics(labels, scores)}
+    out["at_tau_unsup"] = threshold_metrics(labels, scores, calib.tau_unsup_p99)
+    out["at_tau_unsup_3sigma"] = threshold_metrics(labels, scores, calib.tau_unsup_3sigma)
+    if calib.tau_f1 is not None:
+        out["at_tau_f1"] = threshold_metrics(labels, scores, calib.tau_f1)
+    return out
 
 
 # --------------------------------------------------------------------------------------
 # Aggregation / reporting
 # --------------------------------------------------------------------------------------
-HEADLINE = ["P-AP", "AU-PRO@5%FPR", "AU-PRO", "I-FPR@95TPR", "I-TPR@1%FPR",
+HEADLINE = ["P-AP", "Img-P-AP", "AU-PRO@5%FPR", "AU-PRO", "I-FPR@95TPR", "I-TPR@1%FPR",
             "I-AUROC", "I-AP", "I-F1max", "P-AUROC", "P-F1max"]
 
 
@@ -154,14 +209,21 @@ def save_results(results: list[dict], out_dir: Path, tag: str, extra: dict | Non
     lines = [f"# Results ({tag})", ""]
     protocol = (extra or {}).get("protocol", {})
     if protocol:
+        prec = ("BF16 AMP" if protocol.get("amp") else
+                ("FP32 (TF32)" if protocol.get("allow_tf32", True) else "FP32 (IEEE)"))
         lines += [f"Dataset: **{protocol['dataset']}**; split: **{protocol['split']}**; "
                   f"category coverage: **{len(results)}/{len(protocol['configured_categories'])}**; "
-                  f"mask resolution: **{protocol['mask_size']}** ({protocol['mask_resize']}).",
+                  f"mask resolution: **{protocol['mask_size']}** ({protocol['mask_resize']}); "
+                  f"calibration: **{protocol.get('calibration_scope', 'per_category')}**; "
+                  f"precision: **{prec}**.",
                   "", "Evaluated: " + ", ".join(protocol["evaluated_categories"]) + ".", ""]
         if not protocol["complete_category_coverage"]:
             lines += ["**Partial-category evaluation; not a full benchmark result.**", ""]
     lines += ["F1max and TPR@1%FPR are test-curve diagnostics, not deployable tuned thresholds. "
               "Operating-point metrics use held-out validation thresholds.", "", _markdown(df), ""]
+    if extra and "pooled_clean" in extra:
+        pooled_df = pd.DataFrame([flatten_result(extra["pooled_clean"])], index=["pooled_all"])
+        lines += ["## Category-blind pooled image ranking", "", _markdown(pooled_df, index_name="scope"), ""]
     lines += ["## Sample support", "", "| category | test normal | test anomalous | normal validation | empty anomaly masks |",
               "|---|---:|---:|---:|---:|"]
     for r in results:
