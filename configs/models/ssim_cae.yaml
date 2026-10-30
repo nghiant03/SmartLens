@@ -1,0 +1,22 @@
+# Baseline 1: multi-scale convolutional autoencoder, L1 + MS-SSIM (one model per category)
+name: ssim_cae
+setting: per_class
+input_size: 256
+latent_dim: 256
+base_channels: 32
+train:
+  iters: 4000
+  batch_size: 16
+  lr: 5.0e-4
+  weight_decay: 1.0e-5
+  warmup_iters: 100
+  l1_weight: 1.0
+  ssim_weight: 1.0
+  ssim_scales: 3
+  val_every: 250            # early stopping on normal-val reconstruction loss
+  augment: auto             # auto = flips/rot90 for texture categories only
+score:
+  ssim_weight: 0.5          # map = 0.5 * (1-SSIM)/2 (multi-scale) + 0.5 * |x - x_hat|
+  l1_weight: 0.5
+  blur_sigma: 4.0
+  image_topk_ratio: 0.0     # 0 -> max pixel

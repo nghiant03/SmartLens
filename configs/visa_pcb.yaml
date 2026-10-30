@@ -1,0 +1,7 @@
+# VisA micro-defect subset (official 1cls split -> leakage-free sub-splits).
+_base_: mvtec_unified.yaml
+data:
+  name: visa
+  root: ${SMARTLENS_DATA_ROOT}/visa
+  split_manifest: configs/splits/visa.json
+  categories: [pcb1, pcb2, pcb3, pcb4, capsules, candle]

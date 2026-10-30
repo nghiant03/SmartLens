@@ -1,0 +1,4 @@
+# Same model, resolution, batch size and optimization budget as Dinomaly A0.
+# Target: user-selected 24GB+ training GPU. Profile on that GPU before the full run.
+_base_: dinomaly.yaml
+grad_checkpoint: false

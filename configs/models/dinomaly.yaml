@@ -1,0 +1,28 @@
+# Baseline 3: Dinomaly-Repro (CVPR 2025) - unified multi-class model (= ablation A0)
+name: dinomaly
+setting: unified
+input_size: 448
+encoder: dinov2_vitb14_reg            # dinov2_vits14_reg for the lightweight mode
+target_layers: [2, 3, 4, 5, 6, 7, 8, 9]
+fuse_layer_encoder: [[0, 1, 2, 3], [4, 5, 6, 7]]
+fuse_layer_decoder: [[0, 1, 2, 3], [4, 5, 6, 7]]
+decoder_depth: 8
+bottleneck_dropout: 0.2
+amp: true
+grad_checkpoint: true                 # required on the audited 8GB laptop; measure on target hardware
+train:
+  iters: 10000
+  batch_size: 16
+  lr: 2.0e-3
+  final_lr: 2.0e-4
+  weight_decay: 1.0e-4
+  warmup_iters: 100
+  hm_p: 0.9
+  hm_ramp_iters: 1000
+  hm_factor: 0.1
+  grad_clip: 0.1
+  save_every: 2500
+score:
+  blur_sigma: 4.0
+  blur_kernel_size: 5
+  image_topk_ratio: 0.01

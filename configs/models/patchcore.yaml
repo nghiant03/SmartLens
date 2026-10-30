@@ -1,0 +1,13 @@
+# Baseline 2a: PatchCore (WRN50-2 layer2+3, 10% greedy coreset), one memory bank per category
+name: patchcore
+setting: per_class
+input_size: 256
+backbone: wide_resnet50_2
+layers: [layer2, layer3]
+patch_size: 3
+coreset_ratio: 0.1
+max_coreset_size: 25000     # caps memory bank size on large VisA categories
+coreset_proj_dim: 128
+num_neighbors: 9
+blur_sigma: 4.0
+batch_size: 16

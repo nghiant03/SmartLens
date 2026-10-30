@@ -1,0 +1,25 @@
+# MVTec AD (15 categories). Dataset lives inside the repo at datasets/mvtec_ad (git-ignored);
+# override with SMARTLENS_DATA_ROOT=/some/dir (expects <dir>/mvtec_ad).
+data:
+  name: mvtec_ad
+  root: ${SMARTLENS_DATA_ROOT}/mvtec_ad
+  split_manifest: configs/splits/mvtec_ad.json
+  categories: [bottle, cable, capsule, carpet, grid, hazelnut, leather, metal_nut,
+               pill, screw, tile, toothbrush, transistor, wood, zipper]
+  mask_size: 448            # common evaluation grid; historical smoke runs used 256/area
+  mask_resize: nearest     # label-preserving; still not a native-resolution micro-defect benchmark
+  seed: 42
+  val_normal_ratio: 0.15
+  test_val_ratio: 0.20
+
+eval:
+  batch_size: 16
+  num_workers: 6
+  unsup_percentile: 99.0    # tau_unsup = 99th pct of normal-val image scores
+  compute_pro: true
+  pro_integration_limit: 0.3
+  gallery_items: 8
+  optshift: [illum_gradient, gamma_0.65, gamma_1.45, glare, affine]
+  latency:
+    warmup: 50
+    iters: 200
